@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Microsoft.Extensions.Options;
 using AnotadorApi.Web.Configuration;
 using AnotadorApi.Web.Models;
@@ -68,19 +69,23 @@ public class MeetingProcessorService
                 return;
             }
 
-            using var audioStream = new MemoryStream(audioBytes);
+            // 4. Convert audio to WAV (Whisper requires 16-bit PCM WAV)
+            _logger.LogInformation("Converting audio to WAV for meeting: {MeetingId}", meetingId);
+            var wavBytes = await ConvertToWavAsync(audioBytes);
 
-            // 4. Transcribe with Whisper
+            using var audioStream = new MemoryStream(wavBytes);
+
+            // 5. Transcribe with Whisper
             _logger.LogInformation("Transcribing meeting: {MeetingId}", meetingId);
             var transcription = await _transcription.TranscribeAsync(
                 audioStream, meetingResponse.Language ?? "auto");
 
-            // 5. Process with Ollama
+            // 6. Process with Ollama
             _logger.LogInformation("Processing transcript with AI: {MeetingId}", meetingId);
             var result = await _ai.ProcessTranscriptAsync(
                 transcription.FullText, transcription.Language);
 
-            // 6. Update meeting with results
+            // 7. Update meeting with results
             await supabase.From<MeetingRow>()
                 .Where(m => m.Id == meetingId)
                 .Set(m => m.RefinedTranscript!, transcription.FullText)
@@ -89,7 +94,7 @@ public class MeetingProcessorService
                 .Set(m => m.Status!, "completed")
                 .Update();
 
-            // 7. Insert action items
+            // 8. Insert action items
             foreach (var item in result.ActionItems)
             {
                 await supabase.From<ActionItemRow>()
@@ -103,7 +108,7 @@ public class MeetingProcessorService
                     });
             }
 
-            // 8. Insert reminders
+            // 9. Insert reminders
             foreach (var reminder in result.Reminders)
             {
                 await supabase.From<ReminderRow>()
@@ -123,6 +128,48 @@ public class MeetingProcessorService
         {
             _logger.LogError(ex, "Failed to process meeting: {MeetingId}", meetingId);
             await UpdateMeetingStatus(supabase, meetingId, "failed");
+        }
+    }
+
+    private async Task<byte[]> ConvertToWavAsync(byte[] inputAudio)
+    {
+        var tempInput = Path.GetTempFileName();
+        var tempOutput = Path.ChangeExtension(Path.GetTempFileName(), ".wav");
+
+        try
+        {
+            await File.WriteAllBytesAsync(tempInput, inputAudio);
+
+            var process = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = "ffmpeg",
+                    Arguments = $"-i \"{tempInput}\" -ar 16000 -ac 1 -sample_fmt s16 -y \"{tempOutput}\"",
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                }
+            };
+
+            process.Start();
+            var stderr = await process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+
+            if (process.ExitCode != 0)
+            {
+                _logger.LogError("ffmpeg conversion failed: {Error}", stderr);
+                throw new Exception($"ffmpeg failed with exit code {process.ExitCode}: {stderr}");
+            }
+
+            _logger.LogInformation("Audio converted to WAV successfully");
+            return await File.ReadAllBytesAsync(tempOutput);
+        }
+        finally
+        {
+            if (File.Exists(tempInput)) File.Delete(tempInput);
+            if (File.Exists(tempOutput)) File.Delete(tempOutput);
         }
     }
 
