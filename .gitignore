@@ -1,0 +1,18 @@
+## .NET
+bin/
+obj/
+*.user
+*.suo
+*.cache
+*.dll
+*.pdb
+*.exe
+.vs/
+*.userprefs
+
+## Models (large binary files)
+models/
+
+## Secrets
+appsettings.Development.json
+*.pfx
