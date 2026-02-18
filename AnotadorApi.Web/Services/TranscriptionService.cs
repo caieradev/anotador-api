@@ -8,7 +8,6 @@ public class TranscriptionService : IDisposable
 {
     private readonly AppSettings _settings;
     private readonly ILogger<TranscriptionService> _logger;
-    private WhisperProcessor? _processor;
     private readonly SemaphoreSlim _semaphore = new(1, 1);
 
     public TranscriptionService(IOptions<AppSettings> settings, ILogger<TranscriptionService> logger)
@@ -17,35 +16,40 @@ public class TranscriptionService : IDisposable
         _logger = logger;
     }
 
-    private async Task<WhisperProcessor> GetProcessorAsync()
+    private WhisperFactory? _factory;
+
+    private WhisperFactory GetFactory()
     {
-        if (_processor != null) return _processor;
+        if (_factory != null) return _factory;
 
-        await _semaphore.WaitAsync();
-        try
-        {
-            if (_processor != null) return _processor;
-
-            _logger.LogInformation("Loading Whisper model from {Path}", _settings.WhisperModelPath);
-
-            var factory = WhisperFactory.FromPath(_settings.WhisperModelPath);
-            _processor = factory.CreateBuilder()
-                .WithLanguageDetection()
-                .Build();
-
-            return _processor;
-        }
-        finally
-        {
-            _semaphore.Release();
-        }
+        _logger.LogInformation("Loading Whisper model from {Path}", _settings.WhisperModelPath);
+        _factory = WhisperFactory.FromPath(_settings.WhisperModelPath);
+        return _factory;
     }
 
     public async Task<TranscriptionResult> TranscribeAsync(Stream audioStream, string language = "auto")
     {
         _logger.LogInformation("Transcribing audio, language hint: {Language}", language);
 
-        var processor = await GetProcessorAsync();
+        await _semaphore.WaitAsync();
+        try
+        {
+        var factory = GetFactory();
+        var builder = factory.CreateBuilder()
+            .WithThreads(Environment.ProcessorCount);
+
+        if (language != "auto" && language != "detected")
+        {
+            var langCode = language.Split('_')[0]; // pt_BR -> pt
+            _logger.LogInformation("Forcing language: {Lang}", langCode);
+            builder.WithLanguage(langCode);
+        }
+        else
+        {
+            builder.WithLanguageDetection();
+        }
+
+        using var processor = builder.Build();
         var segments = new List<TranscriptionSegment>();
 
         await foreach (var segment in processor.ProcessAsync(audioStream))
@@ -61,17 +65,24 @@ public class TranscriptionService : IDisposable
         var fullText = string.Join(" ", segments.Select(s => s.Text.Trim()));
         var detectedLanguage = language == "auto" ? "detected" : language;
 
+        _logger.LogInformation("Transcription complete: {SegmentCount} segments, {Length} chars", segments.Count, fullText.Length);
+
         return new TranscriptionResult
         {
             FullText = fullText,
             Segments = segments,
             Language = detectedLanguage
         };
+        }
+        finally
+        {
+            _semaphore.Release();
+        }
     }
 
     public void Dispose()
     {
-        _processor?.Dispose();
+        _factory?.Dispose();
         _semaphore.Dispose();
     }
 }
