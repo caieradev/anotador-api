@@ -35,6 +35,9 @@ public class MeetingRow : BaseModel
 
     [Column("summary")]
     public string? Summary { get; set; }
+
+    [Column("progress")]
+    public int? Progress { get; set; }
 }
 
 [Table("action_items")]

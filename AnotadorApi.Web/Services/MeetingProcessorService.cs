@@ -36,10 +36,7 @@ public class MeetingProcessorService
         try
         {
             // 1. Update status to processing
-            await supabase.From<MeetingRow>()
-                .Where(m => m.Id == meetingId)
-                .Set(m => m.Status!, "processing")
-                .Update();
+            await UpdateProgress(supabase, meetingId, "processing", 0);
 
             // 2. Get meeting data
             var meetingResponse = await supabase.From<MeetingRow>()
@@ -70,28 +67,33 @@ public class MeetingProcessorService
             }
 
             // 4. Convert audio to WAV (Whisper requires 16-bit PCM WAV)
+            await UpdateProgress(supabase, meetingId, "processing", 10);
             _logger.LogInformation("Converting audio to WAV for meeting: {MeetingId}", meetingId);
             var wavBytes = await ConvertToWavAsync(audioBytes);
 
             using var audioStream = new MemoryStream(wavBytes);
 
             // 5. Transcribe with Whisper
+            await UpdateProgress(supabase, meetingId, "processing", 20);
             _logger.LogInformation("Transcribing meeting: {MeetingId}", meetingId);
             var transcription = await _transcription.TranscribeAsync(
                 audioStream, meetingResponse.Language ?? "auto");
 
             // 6. Process with Ollama
+            await UpdateProgress(supabase, meetingId, "processing", 70);
             _logger.LogInformation("Processing transcript with AI: {MeetingId}", meetingId);
             var result = await _ai.ProcessTranscriptAsync(
                 transcription.FullText, transcription.Language);
 
             // 7. Update meeting with results
+            await UpdateProgress(supabase, meetingId, "processing", 90);
             await supabase.From<MeetingRow>()
                 .Where(m => m.Id == meetingId)
                 .Set(m => m.RefinedTranscript!, transcription.FullText)
                 .Set(m => m.Summary!, result.Summary)
                 .Set(m => m.Title!, result.Title)
                 .Set(m => m.Status!, "completed")
+                .Set(m => m.Progress!, 100)
                 .Update();
 
             // 8. Insert action items
@@ -178,6 +180,15 @@ public class MeetingProcessorService
         await supabase.From<MeetingRow>()
             .Where(m => m.Id == meetingId)
             .Set(m => m.Status!, status)
+            .Update();
+    }
+
+    private static async Task UpdateProgress(Supabase.Client supabase, Guid meetingId, string status, int progress)
+    {
+        await supabase.From<MeetingRow>()
+            .Where(m => m.Id == meetingId)
+            .Set(m => m.Status!, status)
+            .Set(m => m.Progress!, progress)
             .Update();
     }
 }
