@@ -10,8 +10,8 @@ obj/
 .vs/
 *.userprefs
 
-## Models (large binary files)
-models/
+## Whisper models (large binary files)
+/models/
 
 ## Secrets
 appsettings.Development.json
